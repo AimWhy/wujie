@@ -1,4 +1,5 @@
-import { HashRouter as Router, Route, Routes, NavLink,  useLocation } from "react-router-dom";
+import { HashRouter as Router, Route, Routes, NavLink, Navigate, useLocation, useNavigate } from "react-router-dom";
+import WujieReact from "wujie-react";
 import React, { useState } from "react";
 import Home from "./pages/Home";
 import React16 from "./pages/React16";
@@ -11,6 +12,8 @@ import All from "./pages/All";
 import Button from "antd/es/button";
 import { UnorderedListOutlined, CaretUpOutlined } from "@ant-design/icons";
 
+const { bus } = WujieReact;
+
 const subMap = {
   react16: ["home", "dialog", "location", "communication", "nest", "font"],
   react17: ["home", "dialog", "location", "communication", "state"],
@@ -21,11 +24,24 @@ const subMap = {
 
 function Nav() {
   const location = useLocation();
+  const navigation = useNavigate(); 
   const [react16Flag, setReact16Flag] = useState(location.pathname.includes("react16-sub"));
   const [react17Flag, setReact17Flag] = useState(location.pathname.includes("react7-sub"));
   const [vue2Flag, setVue2Flag] = useState(location.pathname.includes("vue2-sub"));
   const [vue3Flag, setVue3Flag] = useState(location.pathname.includes("vue3-sub"));
   const [viteFlag, setViteFlag] = useState(location.pathname.includes("vite-sub"));
+  const degrade = window.Proxy
+
+  // 在 xxx-sub 路由下子应用将激活路由同步给主应用，主应用跳转对应路由高亮菜单栏
+  bus.$on("sub-route-change", (name, path) => {
+    const mainName = `${name}-sub`;
+    const mainPath = `/${name}-sub${path}`;
+    const currentPath = window.location.hash.replace("#", "")
+    if(currentPath.includes(mainName) && currentPath !== mainPath) {
+      navigation(mainPath);
+    }
+  });
+
 
   const handleFlag = (name) => {
     switch (name) {
@@ -92,10 +108,10 @@ function Nav() {
           </NavLink>
         ))}
       </div>
-      <NavLink to="/vue3" className={({ isActive }) => (isActive ? "active" : "inactive")}>
+      {degrade && <NavLink to="/vue3" className={({ isActive }) => (isActive ? "active" : "inactive")}>
         vue3<span className="alive">保活</span>
         <CaretUpOutlined className={vue3Flag ? "main-icon active" : "main-icon"} onClick={() => handleFlag("vue3")} />
-      </NavLink>
+      </NavLink>}
       <div className="sub-menu" style={{display: vue3Flag ? "block" : "none"}}>
         {subMap.vue3.map((item) => (
           <NavLink to={`/vue3-sub/${item}`} key={item} className={({ isActive }) => (isActive ? "active" : "inactive")}>
@@ -103,10 +119,10 @@ function Nav() {
           </NavLink>
         ))}
       </div>
-      <NavLink to="/vite" className={({ isActive }) => (isActive ? "active" : "inactive")}>
+       {degrade && <NavLink to="/vite" className={({ isActive }) => (isActive ? "active" : "inactive")}>
         vite
         <CaretUpOutlined className={viteFlag ? "main-icon active" : "main-icon"} onClick={() => handleFlag("vite")} />
-      </NavLink>
+      </NavLink>}
       <div className="sub-menu" style={{display: viteFlag ? "block" : "none"}}>
         {subMap.vite.map((item) => (
           <NavLink to={`/vite-sub/${item}`} key={item} className={({ isActive }) => (isActive ? "active" : "inactive")}>
@@ -154,7 +170,7 @@ class App extends React.PureComponent {
               <Route exact path="/vite-sub/:path" element={<Vite />} />
               <Route exact path="/angular12" element={<Angular12 />} />
               <Route exact path="/all" element={<All />} />
-              {/* <Route path="*" element={<Navigate to="/home" replace />} /> */}
+              <Route path="*" element={<Navigate to="/home" replace />} />
             </Routes>
           </div>
         </Router>

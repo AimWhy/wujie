@@ -9,7 +9,7 @@ import hostMap from "../hostMap";
 export default {
   data() {
     return {
-      viteUrl: hostMap("//localhost:7500/") + (this.$route.params.path ? `${this.$route.params.path}` : ""),
+      viteUrl: hostMap("//localhost:7500/"),
     };
   },
 };

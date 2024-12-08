@@ -7,10 +7,12 @@ export default class WujieReact extends React.PureComponent {
     height: typeof PropTypes.string;
     width: typeof PropTypes.string;
     name: typeof PropTypes.string;
+    loading: typeof PropTypes.element;
     url: typeof PropTypes.string;
     alive: typeof PropTypes.bool;
     fetch: typeof PropTypes.func;
     props: typeof PropTypes.object;
+    attrs: typeof PropTypes.object;
     replace: typeof PropTypes.func;
     sync: typeof PropTypes.bool;
     prefix: typeof PropTypes.object;
@@ -22,9 +24,9 @@ export default class WujieReact extends React.PureComponent {
     afterMount: typeof PropTypes.func;
     beforeUnmount: typeof PropTypes.func;
     afterUnmount: typeof PropTypes.func;
-    activated: typeof PropTypes.func,
-    deactivated: typeof PropTypes.func,
-    loadError: typeof PropTypes.func,
+    activated: typeof PropTypes.func;
+    deactivated: typeof PropTypes.func;
+    loadError: typeof PropTypes.func;
   };
   static bus: typeof bus;
   static setupApp: typeof setupApp;

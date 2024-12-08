@@ -2,14 +2,22 @@ import { patchElementEffect, renderIframeReplaceApp } from "./iframe";
 import { renderElementToContainer } from "./shadow";
 import { pushUrlToWindow } from "./sync";
 import { documentProxyProperties, rawDocumentQuerySelector } from "./common";
-import { WUJIE_TIPS_RELOAD_DISABLED } from "./constant";
-import { getTargetValue, anchorElementGenerator, getDegradeIframe, isCallable, warn } from "./utils";
+import { WUJIE_TIPS_RELOAD_DISABLED, WUJIE_TIPS_GET_ELEMENT_BY_ID } from "./constant";
+import {
+  getTargetValue,
+  anchorElementGenerator,
+  getDegradeIframe,
+  isCallable,
+  checkProxyFunction,
+  warn,
+  stopMainAppRun,
+} from "./utils";
 
 /**
  * location href 的set劫持操作
  */
 function locationHrefSet(iframe: HTMLIFrameElement, value: string, appHostPath: string): boolean {
-  const { shadowRoot, id, degrade, document } = iframe.contentWindow.__WUJIE;
+  const { shadowRoot, id, degrade, document, degradeAttrs } = iframe.contentWindow.__WUJIE;
   let url = value;
   if (!/^http/.test(url)) {
     let hrefElement = anchorElementGenerator(url);
@@ -19,9 +27,9 @@ function locationHrefSet(iframe: HTMLIFrameElement, value: string, appHostPath: 
   iframe.contentWindow.__WUJIE.hrefFlag = true;
   if (degrade) {
     const iframeBody = rawDocumentQuerySelector.call(iframe.contentDocument, "body");
-    renderElementToContainer(document.firstElementChild, iframeBody);
-    renderIframeReplaceApp(window.decodeURIComponent(url), getDegradeIframe(id).parentElement);
-  } else renderIframeReplaceApp(url, shadowRoot.host.parentElement);
+    renderElementToContainer(document.documentElement, iframeBody);
+    renderIframeReplaceApp(window.decodeURIComponent(url), getDegradeIframe(id).parentElement, degradeAttrs);
+  } else renderIframeReplaceApp(url, shadowRoot.host.parentElement, degradeAttrs);
   pushUrlToWindow(id, url);
   return true;
 }
@@ -46,11 +54,16 @@ export function proxyGenerator(
         return target.__WUJIE.proxyLocation;
       }
       // 判断自身
-      if (p === "self" || p === "window") {
+      if (p === "self" || (p === "window" && Object.getOwnPropertyDescriptor(window, "window").get)) {
         return target.__WUJIE.proxy;
       }
       // 不要绑定this
       if (p === "__WUJIE_RAW_DOCUMENT_QUERY_SELECTOR__" || p === "__WUJIE_RAW_DOCUMENT_QUERY_SELECTOR_ALL__") {
+        return target[p];
+      }
+      // https://262.ecma-international.org/8.0/#sec-proxy-object-internal-methods-and-internal-slots-get-p-receiver
+      const descriptor = Object.getOwnPropertyDescriptor(target, p);
+      if (descriptor?.configurable === false && descriptor?.writable === false) {
         return target[p];
       }
       // 修正this指针指向
@@ -58,6 +71,7 @@ export function proxyGenerator(
     },
 
     set: (target: Window, p: PropertyKey, value: any) => {
+      checkProxyFunction(target, value);
       target[p] = value;
       return true;
     },
@@ -71,19 +85,24 @@ export function proxyGenerator(
     {
       get: function (_fakeDocument, propKey) {
         const document = window.document;
-        const shadowRoot = iframe.contentWindow.__WUJIE.shadowRoot;
+        const { shadowRoot, proxyLocation } = iframe.contentWindow.__WUJIE;
+        // iframe初始化完成后，webcomponent还未挂在上去，此时运行了主应用代码，必须中止
+        if (!shadowRoot) stopMainAppRun();
+        const rawCreateElement = iframe.contentWindow.__WUJIE_RAW_DOCUMENT_CREATE_ELEMENT__;
+        const rawCreateTextNode = iframe.contentWindow.__WUJIE_RAW_DOCUMENT_CREATE_TEXT_NODE__;
         // need fix
         if (propKey === "createElement" || propKey === "createTextNode") {
           return new Proxy(document[propKey], {
-            apply(createElement, _ctx, args) {
-              const element = createElement.apply(iframe.contentDocument, args);
+            apply(_createElement, _ctx, args) {
+              const rawCreateMethod = propKey === "createElement" ? rawCreateElement : rawCreateTextNode;
+              const element = rawCreateMethod.apply(iframe.contentDocument, args);
               patchElementEffect(element, iframe.contentWindow);
               return element;
             },
           });
         }
         if (propKey === "documentURI" || propKey === "URL") {
-          return (iframe.contentWindow.__WUJIE.proxyLocation as Location).href;
+          return (proxyLocation as Location).href;
         }
 
         // from shadowRoot
@@ -95,24 +114,72 @@ export function proxyGenerator(
           return new Proxy(shadowRoot.querySelectorAll, {
             apply(querySelectorAll, _ctx, args) {
               let arg = args[0];
+              if (_ctx !== iframe.contentDocument) {
+                return _ctx[propKey].apply(_ctx, args);
+              }
+
               if (propKey === "getElementsByTagName" && arg === "script") {
                 return iframe.contentDocument.scripts;
               }
               if (propKey === "getElementsByClassName") arg = "." + arg;
               if (propKey === "getElementsByName") arg = `[name="${arg}"]`;
-              return querySelectorAll.call(shadowRoot, arg);
+
+              // FIXME: This string must be a valid CSS selector string; if it's not, a SyntaxError exception is thrown;
+              // so we should ensure that the program can execute normally in case of exceptions.
+              // reference: https://developer.mozilla.org/en-US/docs/Web/API/Document/querySelectorAll
+
+              let res: NodeList[] | [];
+              try {
+                res = querySelectorAll.call(shadowRoot, arg);
+              } catch (error) {
+                res = [];
+              }
+
+              return res;
             },
           });
         }
         if (propKey === "getElementById") {
           return new Proxy(shadowRoot.querySelector, {
-            apply(querySelector, _ctx, args) {
-              return querySelector.call(shadowRoot, `[id="${args[0]}"]`);
+            // case document.querySelector.call
+            apply(target, ctx, args) {
+              if (ctx !== iframe.contentDocument) {
+                return ctx[propKey]?.apply(ctx, args);
+              }
+              try {
+                return (
+                  target.call(shadowRoot, `[id="${args[0]}"]`) ||
+                  iframe.contentWindow.__WUJIE_RAW_DOCUMENT_QUERY_SELECTOR__.call(
+                    iframe.contentWindow.document,
+                    `#${args[0]}`
+                  )
+                );
+              } catch (error) {
+                warn(WUJIE_TIPS_GET_ELEMENT_BY_ID);
+                return null;
+              }
             },
           });
         }
         if (propKey === "querySelector" || propKey === "querySelectorAll") {
-          return shadowRoot[propKey].bind(shadowRoot);
+          const rawPropMap = {
+            querySelector: "__WUJIE_RAW_DOCUMENT_QUERY_SELECTOR__",
+            querySelectorAll: "__WUJIE_RAW_DOCUMENT_QUERY_SELECTOR_ALL__",
+          };
+          return new Proxy(shadowRoot[propKey], {
+            apply(target, ctx, args) {
+              if (ctx !== iframe.contentDocument) {
+                return ctx[propKey]?.apply(ctx, args);
+              }
+              // 二选一，优先shadowDom，除非采用array合并，排除base，防止对router造成影响
+              return (
+                target.apply(shadowRoot, args) ||
+                (args[0] === "base"
+                  ? null
+                  : iframe.contentWindow[rawPropMap[propKey]].call(iframe.contentWindow.document, args[0]))
+              );
+            },
+          });
         }
         if (propKey === "documentElement" || propKey === "scrollingElement") return shadowRoot.firstElementChild;
         if (propKey === "forms") return shadowRoot.querySelectorAll("form");
@@ -144,7 +211,13 @@ export function proxyGenerator(
     {
       get: function (_fakeLocation, propKey) {
         const location = iframe.contentWindow.location;
-        if (propKey === "host" || propKey === "hostname" || propKey === "protocol" || propKey === "port") {
+        if (
+          propKey === "host" ||
+          propKey === "hostname" ||
+          propKey === "protocol" ||
+          propKey === "port" ||
+          propKey === "origin"
+        ) {
           return urlElement[propKey];
         }
         if (propKey === "href") {
@@ -153,6 +226,13 @@ export function proxyGenerator(
         if (propKey === "reload") {
           warn(WUJIE_TIPS_RELOAD_DISABLED);
           return () => null;
+        }
+        if (propKey === "replace") {
+          return new Proxy(location[propKey], {
+            apply(replace, _ctx, args) {
+              return replace.call(location, args[0]?.replace(appHostPath, mainHostPath));
+            },
+          });
         }
         return getTargetValue(location, propKey);
       },
@@ -195,7 +275,10 @@ export function localGenerator(
     createElement: {
       get: () => {
         return function (...args) {
-          const element = window.document.createElement.apply(iframe.contentDocument, args);
+          const element = iframe.contentWindow.__WUJIE_RAW_DOCUMENT_CREATE_ELEMENT__.apply(
+            iframe.contentDocument,
+            args
+          );
           patchElementEffect(element, iframe.contentWindow);
           return element;
         };
@@ -204,7 +287,10 @@ export function localGenerator(
     createTextNode: {
       get: () => {
         return function (...args) {
-          const element = window.document.createTextNode.apply(iframe.contentDocument, args);
+          const element = iframe.contentWindow.__WUJIE_RAW_DOCUMENT_CREATE_TEXT_NODE__.apply(
+            iframe.contentDocument,
+            args
+          );
           patchElementEffect(element, iframe.contentWindow);
           return element;
         };
@@ -227,6 +313,14 @@ export function localGenerator(
         };
       },
     },
+    getElementById: {
+      get() {
+        return function (...args) {
+          const id = args[0];
+          return (sandbox.document.getElementById(id) as any) || iframe.contentDocument.getElementById(id);
+        };
+      },
+    },
   });
   // 普通处理
   const {
@@ -243,8 +337,10 @@ export function localGenerator(
     .concat(ownerProperties, shadowProperties, shadowMethods, documentProperties, documentMethods)
     .forEach((key) => {
       Object.defineProperty(proxyDocument, key, {
-        get: () =>
-          isCallable(sandbox.document[key]) ? sandbox.document[key].bind(sandbox.document) : sandbox.document[key],
+        get: () => {
+          const value = sandbox.document?.[key];
+          return isCallable(value) ? value.bind(sandbox.document) : value;
+        },
       });
     });
 

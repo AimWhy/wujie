@@ -42,7 +42,6 @@ Web Components 是一个浏览器原生支持的组件封装技术，可以有�
    - 支持生命周期钩子
    - 支持插件系统
    - 支持 vite 框架
-   - 兼容 IE9（需自行 babel 编译）
 
 ## 快速上手
 
@@ -79,14 +78,16 @@ npm i wujie-vue3 -S
 ```javascript
 // vue2
 import WujieVue from "wujie-vue2";
+Vue.use(WujieVue);
 // vue3
 import WujieVue from "wujie-vue3";
-Vue.use(WujieVue);
+app.use(WujieVue);
 ```
 
 - 使用
 
-```html
+```js
+
 <WujieVue
   width="100%"
   height="100%"
@@ -101,6 +102,7 @@ Vue.use(WujieVue);
   :beforeUnmount="beforeUnmount"
   :afterUnmount="afterUnmount"
 ></WujieVue>
+
 ```
 
 ### react 框架
@@ -146,6 +148,9 @@ import WujieReact from "wujie-react";
 运行以下脚本，可以本地开发无界微前端框架，支持实时编译调试开发。
 
 ```bash
-npm i                   // 安装包依赖
+pnpm i                  // 安装包依赖，务必使用pnpm
 npm run start           // 启动所有应用
 ```
+## One more thing
+
+无界微前端解决方案来源于团队的无极低代码平台，通过无界微前端，存量页面和低代码页面可以丝滑的互相内嵌，欢迎体验[【腾讯无极低代码】](https://wujicode.cn)。

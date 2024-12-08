@@ -1,5 +1,5 @@
 import Vue from "vue";
-import { bus, preloadApp, startApp, destroyApp, setupApp } from "wujie";
+import { bus, preloadApp, startApp as rawStartApp, destroyApp, setupApp } from "wujie";
 
 const wujieVueOptions = {
   name: "WujieVue",
@@ -7,6 +7,7 @@ const wujieVueOptions = {
     width: { type: String, default: "" },
     height: { type: String, default: "" },
     name: { type: String, default: "" },
+    loading: { type: HTMLElement, default: undefined },
     url: { type: String, default: "" },
     sync: { type: Boolean, default: undefined },
     prefix: { type: Object, default: undefined },
@@ -29,7 +30,6 @@ const wujieVueOptions = {
   },
   data() {
     return {
-      destroy: null,
       startAppQueue: Promise.resolve(),
     };
   },
@@ -45,36 +45,42 @@ const wujieVueOptions = {
     handleEmit(event, ...args) {
       this.$emit(event, ...args);
     },
+    async startApp() {
+      try {
+        // $props 是vue 2.2版本才有的属性，所以这里直接全部写一遍
+        await rawStartApp({
+          name: this.name,
+          url: this.url,
+          el: this.$refs.wujie,
+          loading: this.loading,
+          alive: this.alive,
+          fetch: this.fetch,
+          props: this.props,
+          attrs: this.attrs,
+          replace: this.replace,
+          sync: this.sync,
+          prefix: this.prefix,
+          fiber: this.fiber,
+          degrade: this.degrade,
+          plugins: this.plugins,
+          beforeLoad: this.beforeLoad,
+          beforeMount: this.beforeMount,
+          afterMount: this.afterMount,
+          beforeUnmount: this.beforeUnmount,
+          afterUnmount: this.afterUnmount,
+          activated: this.activated,
+          deactivated: this.deactivated,
+          loadError: this.loadError,
+        });
+      } catch (error) {
+        console.log(error);
+      }
+    },
     execStartApp() {
-      this.startAppQueue = this.startAppQueue.then(async () => {
-        try {
-          this.destroy = await startApp({
-            name: this.name,
-            url: this.url,
-            el: this.$refs.wujie,
-            alive: this.alive,
-            fetch: this.fetch,
-            props: this.props,
-            attrs: this.attrs,
-            replace: this.replace,
-            sync: this.sync,
-            prefix: this.prefix,
-            fiber: this.fiber,
-            degrade: this.degrade,
-            plugins: this.plugins,
-            beforeLoad: this.beforeLoad,
-            beforeMount: this.beforeMount,
-            afterMount: this.afterMount,
-            beforeUnmount: this.beforeUnmount,
-            afterUnmount: this.afterUnmount,
-            activated: this.activated,
-            deactivated: this.deactivated,
-            loadError: this.loadError,
-          });
-        } catch (error) {
-          console.log(error);
-        }
-      });
+      this.startAppQueue = this.startAppQueue.then(this.startApp);
+    },
+    destroy() {
+      destroyApp(this.name);
     },
   },
   beforeDestroy() {

@@ -1,6 +1,6 @@
 import { anchorElementGenerator, getAnchorElementQueryMap, getSyncUrl, appRouteParse, getDegradeIframe } from "./utils";
 import { renderIframeReplaceApp, patchEventTimeStamp } from "./iframe";
-import { renderElementToContainer, createIframeContainer, clearChild } from "./shadow";
+import { renderElementToContainer, initRenderIframeAndContainer } from "./shadow";
 import { getWujieById, rawDocumentQuerySelector } from "./common";
 
 /**
@@ -8,7 +8,10 @@ import { getWujieById, rawDocumentQuerySelector } from "./common";
  */
 export function syncUrlToWindow(iframeWindow: Window): void {
   const { sync, id, prefix } = iframeWindow.__WUJIE;
-  if (!sync) return;
+  let winUrlElement = anchorElementGenerator(window.location.href);
+  const queryMap = getAnchorElementQueryMap(winUrlElement);
+  // 非同步且url上没有当前id的查询参数，否则就要同步参数或者清理参数
+  if (!sync && !queryMap[id]) return (winUrlElement = null);
   const curUrl = iframeWindow.location.pathname + iframeWindow.location.search + iframeWindow.location.hash;
   let validShortPath = "";
   // 处理短路径
@@ -21,11 +24,15 @@ export function syncUrlToWindow(iframeWindow: Window): void {
       }
     });
   }
-  let winUrlElement = anchorElementGenerator(window.location.href);
-  const queryMap = getAnchorElementQueryMap(winUrlElement);
-  queryMap[id] = window.encodeURIComponent(
-    validShortPath ? curUrl.replace(prefix[validShortPath], `{${validShortPath}}`) : curUrl
-  );
+  // 同步
+  if (sync) {
+    queryMap[id] = window.encodeURIComponent(
+      validShortPath ? curUrl.replace(prefix[validShortPath], `{${validShortPath}}`) : curUrl
+    );
+    // 清理
+  } else {
+    delete queryMap[id];
+  }
   const newQuery =
     "?" +
     Object.keys(queryMap)
@@ -68,11 +75,8 @@ export function clearInactiveAppUrl(): void {
   Object.keys(queryMap).forEach((id) => {
     const sandbox = getWujieById(id);
     if (!sandbox) return;
-    // 子应用执行过并且已经卸载才需要清除
-    const clearFlag = sandbox.degrade
-      ? !window.document.contains(getDegradeIframe(sandbox.id))
-      : !window.document.contains(sandbox?.shadowRoot?.host);
-    if (sandbox.execFlag && sandbox.sync && !sandbox.hrefFlag && clearFlag) {
+    // 子应用执行过并且已经失活才需要清除
+    if (sandbox.execFlag && sandbox.sync && !sandbox.hrefFlag && !sandbox.activeFlag) {
       delete queryMap[id];
     }
   });
@@ -122,17 +126,24 @@ export function processAppForHrefJump(): void {
         // 前进href
         if (/http/.test(url)) {
           if (sandbox.degrade) {
-            renderElementToContainer(sandbox.document.firstElementChild, iframeBody);
-            renderIframeReplaceApp(window.decodeURIComponent(url), getDegradeIframe(sandbox.id).parentElement);
-          } else renderIframeReplaceApp(window.decodeURIComponent(url), sandbox.shadowRoot.host.parentElement);
+            renderElementToContainer(sandbox.document.documentElement, iframeBody);
+            renderIframeReplaceApp(
+              window.decodeURIComponent(url),
+              getDegradeIframe(sandbox.id).parentElement,
+              sandbox.degradeAttrs
+            );
+          } else
+            renderIframeReplaceApp(
+              window.decodeURIComponent(url),
+              sandbox.shadowRoot.host.parentElement,
+              sandbox.degradeAttrs
+            );
           sandbox.hrefFlag = true;
           // href后退
         } else if (sandbox.hrefFlag) {
           if (sandbox.degrade) {
             // 走全套流程，但是事件恢复不需要
-            const iframe = createIframeContainer(sandbox.id);
-            renderElementToContainer(iframe, sandbox.el);
-            clearChild(iframe.contentDocument);
+            const { iframe } = initRenderIframeAndContainer(sandbox.id, sandbox.el, sandbox.degradeAttrs);
             patchEventTimeStamp(iframe.contentWindow, sandbox.iframe.contentWindow);
             iframe.contentWindow.onunload = () => {
               sandbox.unmount();

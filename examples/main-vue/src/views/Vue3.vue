@@ -5,16 +5,11 @@
 
 <script>
 import hostMap from "../hostMap";
-import wujieVue from "wujie-vue2";
 export default {
   data() {
     return {
       vue3Url: hostMap("//localhost:7300/"),
     };
-  },
-  mounted() {
-    // 告诉子应用要跳转哪个路由
-    this.$route.params.path && wujieVue.bus.$emit("vue3-router-change", `/${this.$route.params.path}`);
   },
 };
 </script>

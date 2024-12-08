@@ -13,6 +13,7 @@ export default class Communication extends React.Component {
   handleEmit = () => {
     window.$wujie && window.$wujie.bus.$emit("click", "react17");
   };
+
   render() {
     return (
       <div>

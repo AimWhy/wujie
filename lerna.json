@@ -1,8 +1,10 @@
 {
   "packages": [
     "packages/*",
-    "examples/*"
+    "examples/*",
+    "docs"
   ],
+  "npmClient": "pnpm",
   "command": {
     "version": {
       "allowBranch": "master"
@@ -14,5 +16,5 @@
       ]
     }
   },
-  "version": "1.0.0-rc.12"
+  "version": "1.0.24"
 }

@@ -1,10 +1,12 @@
-import { Page } from "puppeteer";
-
 const fs = require("fs");
 const path = require("path");
 const http = require("http");
-
 let server = null;
+type Page = typeof page;
+export function sleep(time) {
+  return new Promise((resolve) => setTimeout(resolve, time));
+}
+
 export function initEnv() {
   server = http.createServer((_req, res) => {
     res.writeHead(200, { "Content-Type": "text/html" });

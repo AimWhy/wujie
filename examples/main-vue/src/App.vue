@@ -40,7 +40,7 @@
         <router-link to="/vue2-sub/communication">communication</router-link>
       </div>
       <!-- vue3相关路由 -->
-      <router-link to="/vue3">
+      <router-link v-if="degrade" to="/vue3">
         vue3
         <span class="alive">保活</span>
         <a-icon :class="['main-icon', { active: vue3Flag }]" type="caret-up" @click.native="handleFlag('vue3')" />
@@ -52,7 +52,7 @@
         <router-link to="/vue3-sub/contact">contact</router-link>
         <router-link to="/vue3-sub/state">state</router-link>
       </div>
-      <router-link to="/vite"
+      <router-link v-if="degrade" to="/vite"
         >vite <a-icon :class="['main-icon', { active: viteFlag }]" type="caret-up" @click.native="handleFlag('vite')"
       /></router-link>
       <div class="sub-menu" v-show="viteFlag">
@@ -63,11 +63,11 @@
       </div>
       <router-link to="/angular12">angular12</router-link>
       <router-link to="/all">all</router-link>
+      <router-link to="/postmessage">postmessage</router-link>
       <a-button class="menu-icon" type="primary" icon="unordered-list" size="large" @click.stop="active = !active" />
     </div>
     <div class="content" @click="active = false">
-      <!-- 必须添加key否则路由共用组件不会渲染 -->
-      <router-view :key="$route.path" />
+      <router-view />
     </div>
   </div>
 </template>
@@ -83,7 +83,14 @@ export default {
       vue2Flag: this.$route.name === "vue2-sub",
       vue3Flag: this.$route.name === "vue3-sub",
       viteFlag: this.$route.name === "vite-sub",
+      degrade: window.Proxy,
     };
+  },
+  mounted() {
+    window.addEventListener("message", this.handleMessage);
+  },
+  beforeDestroy() {
+    window.removeEventListener("message", this.handleMessage);
   },
   methods: {
     close() {
@@ -105,6 +112,7 @@ body {
   height: 100vh;
   --theme: rgb(241, 107, 95);
 }
+
 #app {
   font-family: Avenir, Helvetica, Arial, sans-serif;
   -webkit-font-smoothing: antialiased;
@@ -137,7 +145,7 @@ body {
 #nav .menu-icon {
   display: none;
   border: none;
-  background: var(--theme) !important;
+  background: rgb(241, 107, 95) !important;
 }
 
 .main-icon {
@@ -165,6 +173,7 @@ body {
     transform: translate(0, 0);
     box-shadow: 3px 0px 9px 2px #e6e6e6;
   }
+
   #nav .menu-icon {
     position: absolute;
     left: 100%;
@@ -204,13 +213,13 @@ h3 {
 }
 
 #nav a:hover {
-  color: var(--theme);
+  color: rgb(241, 107, 95);
 }
 
 .alive {
   display: inline-block;
   white-space: nowrap;
-  background-color: var(--theme);
+  background-color: rgb(241, 107, 95);
   border-radius: 8px;
   margin-left: 4px;
   font-size: 10px;
@@ -220,7 +229,7 @@ h3 {
 }
 
 #nav a.router-link-active {
-  color: var(--theme);
+  color: rgb(241, 107, 95);
   background: rgba(0, 0, 0, 0.05);
 }
 </style>

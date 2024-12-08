@@ -1,5 +1,5 @@
-import React from "react";
-import { NavLink, Route, Switch, Redirect } from "react-router-dom";
+import React, { useEffect } from "react";
+import { NavLink, Route, Switch, Redirect, useLocation } from "react-router-dom";
 import Dialog from "./Dialog";
 import Location from "./Location";
 import Communication from "./Communication";
@@ -26,7 +26,7 @@ const Home = () => (
     <p>
       当前antd版本{" "}
       <Tag style={{ verticalAlign: "text-top" }} color="geekblue">
-        3.26.19
+        4.18.3
       </Tag>
     </p>
     <p>
@@ -38,6 +38,12 @@ const Home = () => (
 );
 
 export default function App() {
+  // 在 react16-sub 路由下主动告知主应用路由跳转，主应用也跳到相应路由高亮菜单栏
+  const location = useLocation()
+  useEffect(() => {
+    window.$wujie?.bus.$emit('sub-route-change', "react16", location.pathname)
+  }, [location])
+
   return (
     <div>
       <nav>

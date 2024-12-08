@@ -1,13 +1,21 @@
 import importHTML, { processCssLoader } from "./entry";
-import { StyleObject } from "./template";
+import { StyleObject, ScriptAttributes } from "./template";
 import WuJie, { lifecycle } from "./sandbox";
-import { defineWujieWebComponent } from "./shadow";
+import { defineWujieWebComponent, addLoading } from "./shadow";
 import { processAppForHrefJump } from "./sync";
 import { getPlugins } from "./plugin";
-import { wujieSupport, mergeOptions, isFunction, requestIdleCallback, isMatchSyncQueryById, warn } from "./utils";
+import {
+  wujieSupport,
+  mergeOptions,
+  isFunction,
+  requestIdleCallback,
+  isMatchSyncQueryById,
+  warn,
+  stopMainAppRun,
+} from "./utils";
 import { getWujieById, getOptionsById, addSandboxCacheWithOptions } from "./common";
 import { EventBus } from "./event";
-import { WUJIE_TIPS_STOP_APP, WUJIE_TIPS_NOT_SUPPORTED } from "./constant";
+import { WUJIE_TIPS_NOT_SUPPORTED } from "./constant";
 
 export const bus = new EventBus(Date.now().toString());
 
@@ -16,14 +24,20 @@ export interface ScriptObjectLoader {
   src?: string;
   /** 脚本是否为module模块 */
   module?: boolean;
+  /** 脚本是否为async执行 */
+  async?: boolean;
   /** 脚本是否设置crossorigin */
   crossorigin?: boolean;
   /** 脚本crossorigin的类型 */
   crossoriginType?: "anonymous" | "use-credentials" | "";
+  /** 脚本原始属性 */
+  attrs?: ScriptAttributes;
   /** 内联script的代码 */
   content?: string;
   /** 执行回调钩子 */
   callback?: (appWindow: Window) => any;
+  /** 子应用加载完毕事件 */
+  onload?: Function;
 }
 export interface plugin {
   /** 处理html的loader */
@@ -56,6 +70,10 @@ export interface plugin {
   documentAddEventListenerHook?: eventListenerHook;
   /** 子应用 document removeEventListener 钩子回调 */
   documentRemoveEventListenerHook?: eventListenerHook;
+  /** 子应用 向body、head插入元素后执行的钩子回调 */
+  appendOrInsertElementHook?: <T extends Node>(element: T, iframeWindow: Window) => void;
+  /** 子应用劫持元素的钩子回调 */
+  patchElementHook?: <T extends Node>(element: T, iframeWindow: Window) => void;
   /** 用户自定义覆盖子应用 window 属性 */
   windowPropertyOverride?: (iframeWindow: Window) => void;
   /** 用户自定义覆盖子应用 document 属性 */
@@ -76,14 +94,18 @@ type baseOptions = {
   name: string;
   /** 需要渲染的url */
   url: string;
+  /** 需要渲染的html, 如果已有则无需从url请求 */
+  html?: string;
   /** 代码替换钩子 */
   replace?: (code: string) => string;
   /** 自定义fetch */
   fetch?: (input: RequestInfo, init?: RequestInit) => Promise<Response>;
   /** 注入给子应用的属性 */
   props?: { [key: string]: any };
-  /** 自定义iframe属性 */
+  /** 自定义运行iframe的属性 */
   attrs?: { [key: string]: any };
+  /** 自定义降级渲染iframe的属性 */
+  degradeAttrs?: { [key: string]: any };
   /** 子应用采用fiber模式执行 */
   fiber?: boolean;
   /** 子应用保活，state不会丢失 */
@@ -119,18 +141,17 @@ export type startOptions = baseOptions & {
   sync?: boolean;
   /** 子应用短路径替换，路由同步时生效 */
   prefix?: { [key: string]: string };
+  /** 子应用加载时loading元素 */
+  loading?: HTMLElement;
 };
 
-export type cacheOptions = baseOptions & {
-  /** 预执行 */
-  exec?: boolean;
-  /** 渲染的容器 */
-  el?: HTMLElement | string;
-  /** 路由同步开关 */
-  sync?: boolean;
-  /** 子应用短路径替换，路由同步时生效 */
-  prefix?: { [key: string]: string };
-};
+type optionProperty = "url" | "el";
+
+/**
+ * 合并 preOptions 和 startOptions，并且将 url 和 el 变成可选
+ */
+export type cacheOptions = Omit<preOptions & startOptions, optionProperty> &
+  Partial<Pick<startOptions, optionProperty>>;
 
 /**
  * 强制中断主应用运行
@@ -139,8 +160,7 @@ export type cacheOptions = baseOptions & {
  * 上述条件同时成立说明主应用代码在iframe的loading阶段混入进来了，必须中断执行
  */
 if (window.__WUJIE && !window.__POWERED_BY_WUJIE__) {
-  warn(WUJIE_TIPS_STOP_APP);
-  throw new Error(WUJIE_TIPS_STOP_APP);
+  stopMainAppRun();
 }
 
 // 处理子应用链接跳转
@@ -167,15 +187,32 @@ export async function startApp(startOptions: startOptions): Promise<Function | v
   const cacheOptions = getOptionsById(startOptions.name);
   // 合并缓存配置
   const options = mergeOptions(startOptions, cacheOptions);
-  const { name, url, replace, fetch, props, attrs, fiber, alive, degrade, sync, prefix, el, plugins, lifecycles } =
-    options;
+  const {
+    name,
+    url,
+    html,
+    replace,
+    fetch,
+    props,
+    attrs,
+    degradeAttrs,
+    fiber,
+    alive,
+    degrade,
+    sync,
+    prefix,
+    el,
+    loading,
+    plugins,
+    lifecycles,
+  } = options;
   // 已经初始化过的应用，快速渲染
   if (sandbox) {
     sandbox.plugins = getPlugins(plugins);
     sandbox.lifecycles = lifecycles;
     const iframeWindow = sandbox.iframe.contentWindow;
     if (sandbox.preload) {
-      await Promise.resolve(sandbox.preload);
+      await sandbox.preload;
     }
     if (alive) {
       // 保活
@@ -183,10 +220,15 @@ export async function startApp(startOptions: startOptions): Promise<Function | v
       // 预加载但是没有执行的情况
       if (!sandbox.execFlag) {
         sandbox.lifecycles?.beforeLoad?.(sandbox.iframe.contentWindow);
-        const { getExternalScripts } = await importHTML(url, {
-          fetch: fetch || window.fetch,
-          plugins: sandbox.plugins,
-          loadError: sandbox.lifecycles.loadError,
+        const { getExternalScripts } = await importHTML({
+          url,
+          html,
+          opts: {
+            fetch: fetch || window.fetch,
+            plugins: sandbox.plugins,
+            loadError: sandbox.lifecycles.loadError,
+            fiber,
+          },
         });
         await sandbox.start(getExternalScripts);
       }
@@ -199,12 +241,13 @@ export async function startApp(startOptions: startOptions): Promise<Function | v
        */
       sandbox.unmount();
       await sandbox.active({ url, sync, prefix, el, props, alive, fetch, replace });
+      // 正常加载的情况，先注入css，最后才mount。重新激活也保持同样的时序
+      sandbox.rebuildStyleSheets();
       // 有渲染函数
       sandbox.lifecycles?.beforeMount?.(sandbox.iframe.contentWindow);
       iframeWindow.__WUJIE_MOUNT();
       sandbox.lifecycles?.afterMount?.(sandbox.iframe.contentWindow);
       sandbox.mountFlag = true;
-      sandbox.rebuildStyleSheets();
       return sandbox.destroy;
     } else {
       // 没有渲染函数
@@ -212,12 +255,19 @@ export async function startApp(startOptions: startOptions): Promise<Function | v
     }
   }
 
-  const newSandbox = new WuJie({ name, url, attrs, fiber, degrade, plugins, lifecycles });
+  // 设置loading
+  addLoading(el, loading);
+  const newSandbox = new WuJie({ name, url, attrs, degradeAttrs, fiber, degrade, plugins, lifecycles });
   newSandbox.lifecycles?.beforeLoad?.(newSandbox.iframe.contentWindow);
-  const { template, getExternalScripts, getExternalStyleSheets } = await importHTML(url, {
-    fetch: fetch || window.fetch,
-    plugins: newSandbox.plugins,
-    loadError: newSandbox.lifecycles.loadError,
+  const { template, getExternalScripts, getExternalStyleSheets } = await importHTML({
+    url,
+    html,
+    opts: {
+      fetch: fetch || window.fetch,
+      plugins: newSandbox.plugins,
+      loadError: newSandbox.lifecycles.loadError,
+      fiber,
+    },
   });
 
   const processedHtml = await processCssLoader(newSandbox, template, getExternalStyleSheets);
@@ -239,21 +289,44 @@ export function preloadApp(preOptions: preOptions): void {
     const cacheOptions = getOptionsById(preOptions.name);
     // 合并缓存配置
     const options = mergeOptions({ ...preOptions }, cacheOptions);
-    const { name, url, props, alive, replace, exec, attrs, fiber, degrade, plugins, lifecycles } = options;
+    const {
+      name,
+      url,
+      html,
+      props,
+      alive,
+      replace,
+      fetch,
+      exec,
+      attrs,
+      degradeAttrs,
+      fiber,
+      degrade,
+      prefix,
+      plugins,
+      lifecycles,
+    } = options;
 
-    const sandbox = new WuJie({ name, url, attrs, fiber, degrade, plugins, lifecycles });
+    const sandbox = new WuJie({ name, url, attrs, degradeAttrs, fiber, degrade, plugins, lifecycles });
     if (sandbox.preload) return sandbox.preload;
     const runPreload = async () => {
       sandbox.lifecycles?.beforeLoad?.(sandbox.iframe.contentWindow);
-      const { template, getExternalScripts, getExternalStyleSheets } = await importHTML(url, {
-        fetch: fetch || window.fetch,
-        plugins: sandbox.plugins,
-        loadError: sandbox.lifecycles.loadError,
+      const { template, getExternalScripts, getExternalStyleSheets } = await importHTML({
+        url,
+        html,
+        opts: {
+          fetch: fetch || window.fetch,
+          plugins: sandbox.plugins,
+          loadError: sandbox.lifecycles.loadError,
+          fiber,
+        },
       });
       const processedHtml = await processCssLoader(sandbox, template, getExternalStyleSheets);
-      await sandbox.active({ url, props, alive, template: processedHtml, fetch, replace });
+      await sandbox.active({ url, props, prefix, alive, template: processedHtml, fetch, replace });
       if (exec) {
         await sandbox.start(getExternalScripts);
+      } else {
+        await getExternalScripts();
       }
     };
     sandbox.preload = runPreload();

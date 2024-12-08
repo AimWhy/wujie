@@ -1,4 +1,10 @@
-import { WUJIE_TIPS_NO_URL, WUJIE_DATA_ID } from "./constant";
+import {
+  WUJIE_SCRIPT_ID,
+  WUJIE_TIPS_NO_URL,
+  WUJIE_APP_ID,
+  WUJIE_TIPS_STOP_APP,
+  WUJIE_TIPS_STOP_APP_DETAIL,
+} from "./constant";
 import { plugin, cacheOptions } from "./index";
 
 export function toArray<T>(array: T | T[]): T[] {
@@ -73,11 +79,36 @@ export function isConstructable(fn: () => any | FunctionConstructor) {
   return constructable;
 }
 
+// 修复多个子应用启动，拿到的全局对象都是第一个子应用全局对象的bug：https://github.com/Tencent/wujie/issues/770
+const setFnCacheMap = new WeakMap<
+  Window | Document | ShadowRoot | Location,
+  WeakMap<CallableFunction, CallableFunction>
+>();
+
+export function checkProxyFunction(target: Window | Document | ShadowRoot | Location, value: any) {
+  if (isCallable(value) && !isBoundedFunction(value) && !isConstructable(value)) {
+    if (!setFnCacheMap.has(target)) {
+      setFnCacheMap.set(target, new WeakMap());
+      setFnCacheMap.get(target).set(value, value);
+    } else if (!setFnCacheMap.get(target).has(value)) {
+      setFnCacheMap.get(target).set(value, value);
+    }
+  }
+}
+
 export function getTargetValue(target: any, p: any): any {
   const value = target[p];
+  if (setFnCacheMap.has(target) && setFnCacheMap.get(target).has(value)) {
+    return setFnCacheMap.get(target).get(value);
+  }
   if (isCallable(value) && !isBoundedFunction(value) && !isConstructable(value)) {
     const boundValue = Function.prototype.bind.call(value, target);
-
+    if (setFnCacheMap.has(target)) {
+      setFnCacheMap.get(target).set(value, boundValue);
+    } else {
+      setFnCacheMap.set(target, new WeakMap());
+      setFnCacheMap.get(target).set(value, boundValue);
+    }
     for (const key in value) {
       boundValue[key] = value[key];
     }
@@ -91,7 +122,13 @@ export function getTargetValue(target: any, p: any): any {
 }
 
 export function getDegradeIframe(id: string): HTMLIFrameElement {
-  return window.document.querySelector(`iframe[${WUJIE_DATA_ID}="${id}"]`);
+  return window.document.querySelector(`iframe[${WUJIE_APP_ID}="${id}"]`);
+}
+
+export function setAttrsToElement(element: HTMLElement, attrs: { [key: string]: any }) {
+  Object.keys(attrs).forEach((name) => {
+    element.setAttribute(name, attrs[name]);
+  });
 }
 
 export function appRouteParse(url: string): {
@@ -105,24 +142,24 @@ export function appRouteParse(url: string): {
   }
   const urlElement = anchorElementGenerator(url);
   const appHostPath = urlElement.protocol + "//" + urlElement.host;
-  const appRoutePath = urlElement.pathname + urlElement.search + urlElement.hash;
+  let appRoutePath = urlElement.pathname + urlElement.search + urlElement.hash;
+  if (!appRoutePath.startsWith("/")) appRoutePath = "/" + appRoutePath; // hack ie
   return { urlElement, appHostPath, appRoutePath };
 }
 
 export function anchorElementGenerator(url: string): HTMLAnchorElement {
   const element = window.document.createElement("a");
   element.href = url;
+  element.href = element.href; // hack ie
   return element;
 }
 
 export function getAnchorElementQueryMap(anchorElement: HTMLAnchorElement): { [key: string]: string } {
-  const queryList = anchorElement.search.replace("?", "").split("&");
-  const queryMap = {};
-  queryList.forEach((query) => {
-    const [key, value] = query.split("=");
-    if (key && value) queryMap[key] = value;
-  });
-  return queryMap;
+  const queryString = anchorElement.search || "";
+  return [...new URLSearchParams(queryString).entries()].reduce((p, c) => {
+    p[c[0]] = c[1];
+    return p;
+  }, {} as Record<string, string>);
 }
 
 /**
@@ -144,14 +181,15 @@ export function fixElementCtrSrcOrHref(
     | typeof HTMLAnchorElement
     | typeof HTMLSourceElement
     | typeof HTMLLinkElement
-    | typeof HTMLScriptElement,
+    | typeof HTMLScriptElement
+    | typeof HTMLMediaElement,
   attr
 ): void {
   // patch setAttribute
   const rawElementSetAttribute = iframeWindow.Element.prototype.setAttribute;
   elementCtr.prototype.setAttribute = function (name: string, value: string): void {
     let targetValue = value;
-    if (name === attr) targetValue = getAbsolutePath(value, this.baseURI || "");
+    if (name === attr) targetValue = getAbsolutePath(value, this.baseURI || "", true);
     rawElementSetAttribute.call(this, name, targetValue);
   };
   // patch href get and set
@@ -164,7 +202,7 @@ export function fixElementCtrSrcOrHref(
       return get.call(this);
     },
     set: function (href) {
-      set.call(this, getAbsolutePath(href, this.baseURI));
+      set.call(this, getAbsolutePath(href, this.baseURI, true));
     },
   });
   // TODO: innerHTML的处理
@@ -175,9 +213,14 @@ export function getCurUrl(proxyLocation: Object): string {
   return location.protocol + "//" + location.host + location.pathname;
 }
 
-export function getAbsolutePath(url: string, base: string): string {
+export function getAbsolutePath(url: string, base: string, hash?: boolean): string {
   try {
-    return new URL(url, base).href;
+    // 为空值无需处理
+    if (url) {
+      // 需要处理hash的场景
+      if (hash && url.startsWith("#")) return url;
+      return new URL(url, base).href;
+    } else return url;
   } catch {
     return url;
   }
@@ -248,13 +291,34 @@ export function nextTick(cb: () => any): void {
 //执行钩子函数
 export function execHooks(plugins: Array<plugin>, hookName: string, ...args: Array<any>): void {
   try {
-    plugins
-      .map((plugin) => plugin[hookName])
-      .filter((hook) => isFunction(hook))
-      .forEach((hook) => hook(...args));
+    if (plugins && plugins.length > 0) {
+      plugins
+        .map((plugin) => plugin[hookName])
+        .filter((hook) => isFunction(hook))
+        .forEach((hook) => hook(...args));
+    }
   } catch (e) {
     error(e);
   }
+}
+
+export function isScriptElement(element: HTMLElement): boolean {
+  return element.tagName?.toUpperCase() === "SCRIPT";
+}
+
+let count = 1;
+export function setTagToScript(element: HTMLScriptElement, tag?: string): void {
+  if (isScriptElement(element)) {
+    const scriptTag = tag || String(count++);
+    element.setAttribute(WUJIE_SCRIPT_ID, scriptTag);
+  }
+}
+
+export function getTagFromScript(element: HTMLScriptElement): string | null {
+  if (isScriptElement(element)) {
+    return element.getAttribute(WUJIE_SCRIPT_ID);
+  }
+  return null;
 }
 
 // 合并缓存
@@ -263,14 +327,17 @@ export function mergeOptions(options: cacheOptions, cacheOptions: cacheOptions) 
     name: options.name,
     el: options.el || cacheOptions?.el,
     url: options.url || cacheOptions?.url,
+    html: options.html || cacheOptions?.html,
     exec: options.exec !== undefined ? options.exec : cacheOptions?.exec,
     replace: options.replace || cacheOptions?.replace,
     fetch: options.fetch || cacheOptions?.fetch,
     props: options.props || cacheOptions?.props,
     sync: options.sync !== undefined ? options.sync : cacheOptions?.sync,
     prefix: options.prefix || cacheOptions?.prefix,
+    loading: options.loading || cacheOptions?.loading,
     // 默认 {}
     attrs: options.attrs !== undefined ? options.attrs : cacheOptions?.attrs || {},
+    degradeAttrs: options.degradeAttrs !== undefined ? options.degradeAttrs : cacheOptions?.degradeAttrs || {},
     // 默认 true
     fiber: options.fiber !== undefined ? options.fiber : cacheOptions?.fiber !== undefined ? cacheOptions?.fiber : true,
     alive: options.alive !== undefined ? options.alive : cacheOptions?.alive,
@@ -301,4 +368,9 @@ export function eventTrigger(el: HTMLElement | Window | Document, eventName: str
     event.initCustomEvent(eventName, true, false, detail);
   }
   el.dispatchEvent(event);
+}
+
+export function stopMainAppRun() {
+  warn(WUJIE_TIPS_STOP_APP_DETAIL);
+  throw new Error(WUJIE_TIPS_STOP_APP);
 }

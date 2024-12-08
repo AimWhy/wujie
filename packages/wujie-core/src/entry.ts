@@ -6,7 +6,12 @@ import processTpl, {
   StyleObject,
 } from "./template";
 import { defaultGetPublicPath, getInlineCode, requestIdleCallback, error, compose, getCurUrl } from "./utils";
-import { WUJIE_TIPS_NO_FETCH, WUJIE_TIPS_SCRIPT_ERROR_REQUESTED, WUJIE_TIPS_CSS_ERROR_REQUESTED } from "./constant";
+import {
+  WUJIE_TIPS_NO_FETCH,
+  WUJIE_TIPS_SCRIPT_ERROR_REQUESTED,
+  WUJIE_TIPS_CSS_ERROR_REQUESTED,
+  WUJIE_TIPS_HTML_ERROR_REQUESTED,
+} from "./constant";
 import { getEffectLoaders, isMatchUrl } from "./plugin";
 import Wujie from "./sandbox";
 import { plugin, loadErrorHandler } from "./index";
@@ -26,6 +31,7 @@ interface htmlParseResult {
 
 type ImportEntryOpts = {
   fetch?: typeof window.fetch;
+  fiber?: boolean;
   plugins?: Array<plugin>;
   loadError?: loadErrorHandler;
 };
@@ -129,7 +135,7 @@ const fetchAssets = (
       } else {
         error(WUJIE_TIPS_SCRIPT_ERROR_REQUESTED, src);
         loadError?.(src, e);
-        throw e;
+        return "";
       }
     }));
 
@@ -161,7 +167,8 @@ export function getExternalStyleSheets(
 export function getExternalScripts(
   scripts: ScriptObject[],
   fetch: (input: RequestInfo, init?: RequestInit) => Promise<Response> = defaultFetch,
-  loadError: loadErrorHandler
+  loadError: loadErrorHandler,
+  fiber: boolean
 ): ScriptResultList {
   // module should be requested in iframe
   return scripts.map((script) => {
@@ -170,7 +177,9 @@ export function getExternalScripts(
     // async
     if ((async || defer) && src && !module) {
       contentPromise = new Promise((resolve, reject) =>
-        requestIdleCallback(() => fetchAssets(src, scriptCache, fetch, false, loadError).then(resolve, reject))
+        fiber
+          ? requestIdleCallback(() => fetchAssets(src, scriptCache, fetch, false, loadError).then(resolve, reject))
+          : fetchAssets(src, scriptCache, fetch, false, loadError).then(resolve, reject)
       );
       // module || ignore
     } else if ((module && src) || ignore) {
@@ -182,12 +191,20 @@ export function getExternalScripts(
     } else {
       contentPromise = fetchAssets(src, scriptCache, fetch, false, loadError);
     }
+    // refer https://html.spec.whatwg.org/multipage/scripting.html#attr-script-defer
+    if (module && !async) script.defer = true;
     return { ...script, contentPromise };
   });
 }
 
-export default function importHTML(url: string, opts?: ImportEntryOpts): Promise<htmlParseResult> {
+export default function importHTML(params: {
+  url: string;
+  html?: string;
+  opts: ImportEntryOpts;
+}): Promise<htmlParseResult> {
+  const { url, opts, html } = params;
   const fetch = opts.fetch ?? defaultFetch;
+  const fiber = opts.fiber ?? true;
   const { plugins, loadError } = opts;
   const htmlLoader = plugins ? compose(plugins.map((plugin) => plugin.htmlLoader)) : defaultGetTemplate;
   const jsExcludes = getEffectLoaders("jsExcludes", plugins);
@@ -196,44 +213,53 @@ export default function importHTML(url: string, opts?: ImportEntryOpts): Promise
   const cssIgnores = getEffectLoaders("cssIgnores", plugins);
   const getPublicPath = defaultGetPublicPath;
 
-  const getHtmlParseResult = (url, htmlLoader) =>
-    fetch(url)
-      .then(
-        (response) => response.text(),
-        (e) => {
-          loadError?.(url, e);
-          return Promise.reject(e);
-        }
-      )
-      .then((html) => {
-        const assetPublicPath = getPublicPath(url);
-        const { template, scripts, styles } = processTpl(htmlLoader(html), assetPublicPath);
-        return {
-          template: template,
-          assetPublicPath,
-          getExternalScripts: () =>
-            getExternalScripts(
-              scripts
-                .filter((script) => !script.src || !isMatchUrl(script.src, jsExcludes))
-                .map((script) => ({ ...script, ignore: script.src && isMatchUrl(script.src, jsIgnores) })),
-              fetch,
-              loadError
-            ),
-          getExternalStyleSheets: () =>
-            getExternalStyleSheets(
-              styles
-                .filter((style) => !style.src || !isMatchUrl(style.src, cssExcludes))
-                .map((style) => ({ ...style, ignore: style.src && isMatchUrl(style.src, cssIgnores) })),
-              fetch,
-              loadError
-            ),
-        };
-      });
+  const getHtmlParseResult = (url, html, htmlLoader) =>
+    (html
+      ? Promise.resolve(html)
+      : fetch(url)
+          .then((response) => {
+            if (response.status >= 400) {
+              error(WUJIE_TIPS_HTML_ERROR_REQUESTED, { url, response });
+              loadError?.(url, new Error(WUJIE_TIPS_HTML_ERROR_REQUESTED));
+              return "";
+            }
+            return response.text();
+          })
+          .catch((e) => {
+            embedHTMLCache[url] = null;
+            loadError?.(url, e);
+            return Promise.reject(e);
+          })
+    ).then((html) => {
+      const assetPublicPath = getPublicPath(url);
+      const { template, scripts, styles } = processTpl(htmlLoader(html), assetPublicPath);
+      return {
+        template: template,
+        assetPublicPath,
+        getExternalScripts: () =>
+          getExternalScripts(
+            scripts
+              .filter((script) => !script.src || !isMatchUrl(script.src, jsExcludes))
+              .map((script) => ({ ...script, ignore: script.src && isMatchUrl(script.src, jsIgnores) })),
+            fetch,
+            loadError,
+            fiber
+          ),
+        getExternalStyleSheets: () =>
+          getExternalStyleSheets(
+            styles
+              .filter((style) => !style.src || !isMatchUrl(style.src, cssExcludes))
+              .map((style) => ({ ...style, ignore: style.src && isMatchUrl(style.src, cssIgnores) })),
+            fetch,
+            loadError
+          ),
+      };
+    });
 
   if (opts?.plugins.some((plugin) => plugin.htmlLoader)) {
-    return getHtmlParseResult(url, htmlLoader);
+    return getHtmlParseResult(url, html, htmlLoader);
     // 没有html-loader可以做缓存
   } else {
-    return embedHTMLCache[url] || (embedHTMLCache[url] = getHtmlParseResult(url, htmlLoader));
+    return embedHTMLCache[url] || (embedHTMLCache[url] = getHtmlParseResult(url, html, htmlLoader));
   }
 }
